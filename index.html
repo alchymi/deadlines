@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Deadlines — Wide & Clean</title>
+
+    <!-- Tailwind (CDN) -->
+    <script src="https://cdn.tailwindcss.com"></script>
+
+    <!-- jQuery + FlipClock (CDN) -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.7.1/jquery.min.js"></script>
+    <link
+      rel="stylesheet"
+      href="https://cdnjs.cloudflare.com/ajax/libs/flipclock/0.7.8/flipclock.css"
+    />
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/flipclock/0.7.8/flipclock.min.js"></script>
+
+    <style>
+      /* FlipClock: dark + compact */
+      .flip-clock-wrapper {
+        display: inline-block;
+        margin: 0;
+        vertical-align: middle;
+      }
+      .flip-clock-wrapper ul {
+        background: transparent;
+        margin: 0;
+      }
+      .flip-clock-wrapper ul li a div div.inn {
+        background: #0f172a;
+        color: #e5e7eb;
+        border-radius: 0.5rem;
+      }
+      .flip-clock-divider .flip-clock-label {
+        display: none;
+      }
+      .flip-clock-dot {
+        background: #94a3b8;
+      }
+      .flip-clock-wrapper ul li {
+        line-height: 1;
+      }
+      .flip-clock-wrapper ul li a div.up:after,
+      .flip-clock-wrapper ul li a div.down:after {
+        background-color: #0b1220;
+      }
+    </style>
+  </head>
+  <body
+    class="min-h-screen text-slate-200 bg-gradient-to-br from-[#2a2f36] via-[#131922] to-black"
+  >
+    <!-- Header -->
+    <header class="max-w-screen-2xl mx-auto px-4 md:px-8 py-8">
+      <h1 class="text-3xl sm:text-4xl font-bold">📅 Deadlines</h1>
+      <p class="mt-2 text-slate-400">
+        Data: Grist (public) • Filter by <code>?who=jimmy</code> • Sorted
+        ascending • No seconds • Business days shown
+      </p>
+    </header>
+
+    <!-- List (full width, comfy margins) -->
+    <main class="max-w-screen-2xl mx-auto px-4 md:px-8 pb-16">
+      <div id="deadlines-list" class="space-y-4"></div>
+      <p id="empty-msg" class="hidden text-slate-400">No deadlines found.</p>
+    </main>
+
+    <script>
+      /* ===== CONFIG ===== */
+      const GRIST_URL =
+        "https://grist.skilltech.tools/api/docs/1oZm81JNLk2vFRmbQNBiwF/tables/Table1/records";
+      const FIELD_MAP = {
+        title: "description",
+        due: "hours",
+        who: "who",
+        note: null,
+      };
+
+      // Public holidays (YYYY-MM-DD) to exclude from business days, optional
+      const HOLIDAYS = [
+        // "2025-11-11"
+      ];
+
+      /* ===== UTILS ===== */
+      const qs = new URLSearchParams(location.search);
+      const whoFilterRaw = qs.get("who");
+      const whoFilter = whoFilterRaw ? whoFilterRaw.trim().toLowerCase() : null;
+
+      const fmtShort = (date) =>
+        date.toLocaleString("en-GB", {
+          month: "2-digit",
+          day: "2-digit",
+          hour: "2-digit",
+          minute: "2-digit",
+        });
+      const secondsUntil = (targetDate) =>
+        Math.max(0, Math.ceil((targetDate - new Date()) / 1000));
+
+      function normalizeWho(val) {
+        if (val == null) return [];
+        if (Array.isArray(val))
+          return val.map((x) => String(x).trim().toLowerCase()).filter(Boolean);
+        return String(val)
+          .split(/[;,]|\/|\||&/g)
+          .map((x) => x.trim().toLowerCase())
+          .filter(Boolean);
+      }
+      function recordToDeadline(r) {
+        const f = r?.fields ?? {};
+        const dueDate = new Date((Number(f[FIELD_MAP.due]) || 0) * 1000);
+        return {
+          title: f[FIELD_MAP.title] || "Deadline",
+          due: dueDate,
+          who: normalizeWho(f[FIELD_MAP.who]),
+          note: FIELD_MAP.note ? f[FIELD_MAP.note] ?? "" : "",
+        };
+      }
+      function filterByWho(items, who) {
+        if (!who) return items;
+        return items.filter((it) => it.who.length && it.who.includes(who));
+      }
+      function isHoliday(d) {
+        return HOLIDAYS.includes(d.toISOString().slice(0, 10));
+      }
+      function businessDaysRemaining(from = new Date(), to = new Date()) {
+        const start = new Date(
+          from.getFullYear(),
+          from.getMonth(),
+          from.getDate()
+        );
+        const end = new Date(to.getFullYear(), to.getMonth(), to.getDate());
+        if (end <= start) return 0;
+        let count = 0,
+          d = new Date(start);
+        while (d < end) {
+          const day = d.getDay(); // 0 Sun, 6 Sat
+          if (day !== 0 && day !== 6 && !isHoliday(d)) count++;
+          d.setDate(d.getDate() + 1);
+        }
+        return count;
+      }
+
+      /* ===== RENDER =====
+       Layout (md+): grid-cols-[1fr,auto]  -> Left (title + pills) | Right (FlipClock)
+       Mobile: stack
+    */
+      function createRow(parent, item) {
+        const row = document.createElement("section");
+        row.className = [
+          "w-full rounded-2xl border border-slate-800/70 bg-slate-900/60",
+          "px-5 py-5 shadow-md shadow-black/30",
+          "grid gap-4 items-center",
+          "grid-cols-1 md:[grid-template-columns:minmax(0,1fr)_minmax(260px,1fr)]",
+        ].join(" ");
+        parent.appendChild(row);
+
+        // LEFT: Title + pills (stacked)
+        const left = document.createElement("div");
+        left.className = "min-w-0";
+        row.appendChild(left);
+
+        const title = document.createElement("div");
+        title.className = "text-2xl font-semibold text-slate-100 truncate";
+        title.title = item.title;
+        title.textContent = item.title;
+        left.appendChild(title);
+
+        // Pills row
+        const pills = document.createElement("div");
+        pills.className = "mt-2 flex flex-wrap items-center gap-2";
+        left.appendChild(pills);
+
+        // Red pill: business days left
+        const bd = document.createElement("span");
+        bd.className =
+          "inline-block text-xs sm:text-sm font-semibold px-2.5 py-1 rounded-full bg-red-600 text-white shadow-sm";
+        bd.textContent = `Business days left: ${businessDaysRemaining(
+          new Date(),
+          item.due
+        )}`;
+        pills.appendChild(bd);
+
+        // Green pill: deadline date
+        const duePill = document.createElement("span");
+        duePill.className =
+          "inline-block text-xs sm:text-sm font-semibold px-2.5 py-1 rounded-full bg-emerald-600 text-white shadow-sm";
+        duePill.textContent = `Deadline: ${fmtShort(item.due)}`;
+        pills.appendChild(duePill);
+
+        // RIGHT: FlipClock (smaller, responsive)
+        const right = document.createElement("div");
+        right.className = "justify-self-end md:justify-self-start";
+        row.appendChild(right);
+
+        const clockWrap = document.createElement("div");
+        // Smaller scales; you can tweak these to taste
+        clockWrap.className =
+          "origin-right md:origin-left [transform:scale(0.65)] sm:[transform:scale(0.7)] md:[transform:scale(0.75)] lg:[transform:scale(0.8)]";
+        right.appendChild(clockWrap);
+
+        // Init clock
+        const secs = secondsUntil(item.due);
+        if (secs <= 0 || !window.jQuery || !jQuery.fn || !jQuery.fn.FlipClock) {
+          const done = document.createElement("div");
+          done.className = "text-sm text-slate-400";
+          done.textContent = "Done";
+          right.appendChild(done);
+          return;
+        }
+
+        const $clock = $("<div></div>");
+        $(clockWrap).append($clock);
+
+        const clock = $clock.FlipClock(secs, {
+          clockFace: "DailyCounter",
+          countdown: true,
+          autoStart: true,
+        });
+
+        // Remove seconds (divider + 2 digits)
+        const $secDivider = $clock.find(".flip-clock-divider.seconds");
+        if ($secDivider.length) {
+          $secDivider.nextAll("ul").slice(0, 2).remove();
+          $secDivider.remove();
+        }
+
+        // Update the red pill every 5 min
+        setInterval(() => {
+          bd.textContent = `Business days left: ${businessDaysRemaining(
+            new Date(),
+            item.due
+          )}`;
+        }, 300000);
+      }
+
+      /* ===== FETCH + BOOT ===== */
+      async function fetchGrist() {
+        const r = await fetch(GRIST_URL, { method: "GET", mode: "cors" });
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        const json = await r.json();
+        const rows = Array.isArray(json?.records) ? json.records : [];
+        return rows
+          .map(recordToDeadline)
+          .filter((x) => x.title && x.due instanceof Date && !isNaN(x.due));
+      }
+
+      (async function init() {
+        const list = document.getElementById("deadlines-list");
+        const empty = document.getElementById("empty-msg");
+
+        let items = [];
+        try {
+          items = await fetchGrist();
+        } catch (e) {
+          console.error("Grist error:", e);
+        }
+
+        items = filterByWho(items, whoFilter);
+        items.sort((a, b) => a.due - b.due);
+
+        if (items.length === 0) {
+          empty.classList.remove("hidden");
+          empty.textContent = whoFilter
+            ? `No deadlines for “${whoFilterRaw}”.`
+            : "No deadlines found.";
+          return;
+        }
+
+        items.forEach((item) => createRow(list, item));
+      })();
+    </script>
+  </body>
+</html>
