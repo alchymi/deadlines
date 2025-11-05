@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Deadlines — Wide & Clean</title>
+    <title>Deadlines</title>
 
     <!-- Tailwind (CDN) -->
     <script src="https://cdn.tailwindcss.com"></script>
@@ -50,13 +50,8 @@
   <body
     class="min-h-screen text-slate-200 bg-gradient-to-br from-[#2a2f36] via-[#131922] to-black"
   >
-    <!-- Header -->
-    <header class="max-w-screen-2xl mx-auto px-4 md:px-8 py-8">
-      <h1 class="text-3xl sm:text-4xl font-bold">📅 Deadlines</h1>
-    </header>
-
-    <!-- List (full width, comfy margins) -->
-    <main class="max-w-screen-2xl mx-auto px-4 md:px-8 pb-16">
+    <!-- Content (no header) -->
+    <main class="max-w-screen-2xl mx-auto px-4 md:px-8 py-6 md:py-10">
       <div id="deadlines-list" class="space-y-4"></div>
       <p id="empty-msg" class="hidden text-slate-400">No deadlines found.</p>
     </main>
@@ -72,7 +67,7 @@
         note: null,
       };
 
-      // Public holidays (YYYY-MM-DD) to exclude from business days, optional
+      // Optional public holidays (YYYY-MM-DD)
       const HOLIDAYS = [
         // "2025-11-11"
       ];
@@ -137,8 +132,8 @@
       }
 
       /* ===== RENDER =====
-       Layout (md+): grid-cols-[1fr,auto]  -> Left (title + pills) | Right (FlipClock)
-       Mobile: stack
+       Layout (md+): grid 2 cols -> Left (title + pills) | Right (FlipClock right-aligned)
+       Mobile: stack; FlipClock stays right-aligned via flex.
     */
       function createRow(parent, item) {
         const row = document.createElement("section");
@@ -146,11 +141,11 @@
           "w-full rounded-2xl border border-slate-800/70 bg-slate-900/60",
           "px-5 py-5 shadow-md shadow-black/30",
           "grid gap-4 items-center",
-          "grid-cols-1 md:[grid-template-columns:minmax(0,1fr)_minmax(260px,1fr)]",
+          "grid-cols-1 md:[grid-template-columns:minmax(0,1fr)_minmax(280px,1fr)]",
         ].join(" ");
         parent.appendChild(row);
 
-        // LEFT: Title + pills (stacked)
+        // LEFT: Title + pills
         const left = document.createElement("div");
         left.className = "min-w-0";
         row.appendChild(left);
@@ -161,37 +156,35 @@
         title.textContent = item.title;
         left.appendChild(title);
 
-        // Pills row
         const pills = document.createElement("div");
         pills.className = "mt-2 flex flex-wrap items-center gap-2";
         left.appendChild(pills);
 
-        // Red pill: business days left
+        // Bigger (but not too much) pills
         const bd = document.createElement("span");
         bd.className =
-          "inline-block text-xs sm:text-sm font-semibold px-2.5 py-1 rounded-full bg-red-600 text-white shadow-sm";
+          "inline-block text-sm sm:text-base font-semibold px-3 py-1.5 rounded-full bg-red-600 text-white shadow-sm";
         bd.textContent = `Business days left: ${businessDaysRemaining(
           new Date(),
           item.due
         )}`;
         pills.appendChild(bd);
 
-        // Green pill: deadline date
         const duePill = document.createElement("span");
         duePill.className =
-          "inline-block text-xs sm:text-sm font-semibold px-2.5 py-1 rounded-full bg-emerald-600 text-white shadow-sm";
+          "inline-block text-sm sm:text-base font-semibold px-3 py-1.5 rounded-full bg-emerald-600 text-white shadow-sm";
         duePill.textContent = `Deadline: ${fmtShort(item.due)}`;
         pills.appendChild(duePill);
 
-        // RIGHT: FlipClock (smaller, responsive)
+        // RIGHT: FlipClock aligned right
         const right = document.createElement("div");
-        right.className = "justify-self-end md:justify-self-start";
+        right.className = "flex justify-end md:justify-end";
         row.appendChild(right);
 
         const clockWrap = document.createElement("div");
-        // Smaller scales; you can tweak these to taste
+        // smaller FlipClock
         clockWrap.className =
-          "origin-right md:origin-left [transform:scale(0.65)] sm:[transform:scale(0.7)] md:[transform:scale(0.75)] lg:[transform:scale(0.8)]";
+          "origin-right [transform:scale(0.6)] sm:[transform:scale(0.65)] md:[transform:scale(0.7)] lg:[transform:scale(0.75)]";
         right.appendChild(clockWrap);
 
         // Init clock
@@ -220,7 +213,7 @@
           $secDivider.remove();
         }
 
-        // Update the red pill every 5 min
+        // Update red pill every 5 minutes
         setInterval(() => {
           bd.textContent = `Business days left: ${businessDaysRemaining(
             new Date(),
