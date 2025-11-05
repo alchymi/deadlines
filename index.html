@@ -3,12 +3,12 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Deadlines</title>
+    <title>Deadlines + Gantt</title>
 
-    <!-- Tailwind (CDN) -->
+    <!-- Tailwind -->
     <script src="https://cdn.tailwindcss.com"></script>
 
-    <!-- jQuery + FlipClock (CDN) -->
+    <!-- jQuery + FlipClock (pour la vue Cards seulement) -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.7.1/jquery.min.js"></script>
     <link
       rel="stylesheet"
@@ -17,7 +17,7 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/flipclock/0.7.8/flipclock.min.js"></script>
 
     <style>
-      /* FlipClock: dark + compact */
+      /* FlipClock dark + compact (vue Cards) */
       .flip-clock-wrapper {
         display: inline-block;
         margin: 0;
@@ -45,15 +45,72 @@
       .flip-clock-wrapper ul li a div.down:after {
         background-color: #0b1220;
       }
+
+      /* Gantt: hide text selection while dragging (if you add panning later) */
+      .noselect {
+        user-select: none;
+        -webkit-user-select: none;
+      }
     </style>
   </head>
+
   <body
     class="min-h-screen text-slate-200 bg-gradient-to-br from-[#2a2f36] via-[#131922] to-black"
   >
-    <!-- Content (no header) -->
-    <main class="max-w-screen-2xl mx-auto px-4 md:px-8 py-6 md:py-10">
-      <div id="deadlines-list" class="space-y-4"></div>
-      <p id="empty-msg" class="hidden text-slate-400">No deadlines found.</p>
+    <main class="max-w-screen-2xl mx-auto px-4 md:px-8 py-6 md:py-8">
+      <!-- Toolbar -->
+      <div class="mb-4 flex items-center gap-2">
+        <button
+          id="btnCards"
+          class="px-3 py-2 rounded-lg bg-slate-800 text-slate-100 border border-slate-700 font-medium"
+        >
+          Cards
+        </button>
+        <button
+          id="btnGantt"
+          class="px-3 py-2 rounded-lg bg-slate-900 text-slate-300 border border-slate-700"
+        >
+          Gantt
+        </button>
+        <div class="ml-auto text-sm text-slate-400">
+          Filter via <code>?who=jimmy</code>
+        </div>
+      </div>
+
+      <!-- CARDS VIEW -->
+      <section id="viewCards" class="space-y-4">
+        <div id="deadlines-list" class="space-y-4"></div>
+        <p id="empty-msg" class="hidden text-slate-400">No deadlines found.</p>
+      </section>
+
+      <!-- GANTT VIEW -->
+      <section id="viewGantt" class="hidden">
+        <div
+          id="ganttWrap"
+          class="rounded-2xl border border-slate-800/70 bg-slate-900/60 shadow-md shadow-black/30 overflow-hidden"
+        >
+          <!-- header -->
+          <div
+            class="px-4 py-3 border-b border-slate-800 flex items-center justify-between"
+          >
+            <div class="font-semibold">Timeline</div>
+            <div class="text-xs text-slate-400">
+              Business-days based starts • weekends grayed • today line
+            </div>
+          </div>
+
+          <!-- timeline -->
+          <div class="w-full overflow-auto">
+            <!-- scale -->
+            <div
+              id="ganttScale"
+              class="sticky top-0 z-10 bg-slate-900/90 backdrop-blur px-4 py-2 text-xs text-slate-300 border-b border-slate-800"
+            ></div>
+            <!-- rows -->
+            <div id="ganttRows" class="px-4 py-2"></div>
+          </div>
+        </div>
+      </section>
     </main>
 
     <script>
@@ -64,12 +121,10 @@
         title: "description",
         due: "hours",
         who: "who",
-        note: null,
+        days: "days",
       };
-
-      // Optional public holidays (YYYY-MM-DD)
       const HOLIDAYS = [
-        // "2025-11-11"
+        /* 'YYYY-MM-DD' */
       ];
 
       /* ===== UTILS ===== */
@@ -86,7 +141,6 @@
         });
       const secondsUntil = (targetDate) =>
         Math.max(0, Math.ceil((targetDate - new Date()) / 1000));
-
       function normalizeWho(val) {
         if (val == null) return [];
         if (Array.isArray(val))
@@ -95,20 +149,6 @@
           .split(/[;,]|\/|\||&/g)
           .map((x) => x.trim().toLowerCase())
           .filter(Boolean);
-      }
-      function recordToDeadline(r) {
-        const f = r?.fields ?? {};
-        const dueDate = new Date((Number(f[FIELD_MAP.due]) || 0) * 1000);
-        return {
-          title: f[FIELD_MAP.title] || "Deadline",
-          due: dueDate,
-          who: normalizeWho(f[FIELD_MAP.who]),
-          note: FIELD_MAP.note ? f[FIELD_MAP.note] ?? "" : "",
-        };
-      }
-      function filterByWho(items, who) {
-        if (!who) return items;
-        return items.filter((it) => it.who.length && it.who.includes(who));
       }
       function isHoliday(d) {
         return HOLIDAYS.includes(d.toISOString().slice(0, 10));
@@ -130,22 +170,49 @@
         }
         return count;
       }
+      // recule n jours ouvrés depuis 'from' (exclut sam/dim/holidays)
+      function subBusinessDays(fromDate, n) {
+        const d = new Date(
+          fromDate.getFullYear(),
+          fromDate.getMonth(),
+          fromDate.getDate()
+        );
+        let left = Math.max(0, Math.floor(n));
+        while (left > 0) {
+          d.setDate(d.getDate() - 1);
+          const day = d.getDay();
+          if (day !== 0 && day !== 6 && !isHoliday(d)) left--;
+        }
+        return d;
+      }
 
-      /* ===== RENDER =====
-       Layout (md+): grid 2 cols -> Left (title + pills) | Right (FlipClock right-aligned)
-       Mobile: stack; FlipClock stays right-aligned via flex.
-    */
-      function createRow(parent, item) {
+      function recordToDeadline(r) {
+        const f = r?.fields ?? {};
+        const dueDate = new Date((Number(f[FIELD_MAP.due]) || 0) * 1000);
+        const workload = Number(f[FIELD_MAP.days]);
+        return {
+          title: f[FIELD_MAP.title] || "Deadline",
+          due: dueDate,
+          who: normalizeWho(f[FIELD_MAP.who]),
+          days: isNaN(workload) ? 0 : workload,
+        };
+      }
+      function filterByWho(items, who) {
+        if (!who) return items;
+        return items.filter((it) => it.who.length && it.who.includes(who));
+      }
+
+      /* ===== CARDS RENDER ===== */
+      function createCardRow(parent, item) {
         const row = document.createElement("section");
         row.className = [
           "w-full rounded-2xl border border-slate-800/70 bg-slate-900/60",
           "px-5 py-5 shadow-md shadow-black/30",
           "grid gap-4 items-center",
-          "grid-cols-1 md:[grid-template-columns:minmax(0,1fr)_minmax(280px,1fr)]",
+          "grid-cols-1 md:[grid-template-columns:minmax(0,1fr)_auto_minmax(260px,1fr)]",
         ].join(" ");
         parent.appendChild(row);
 
-        // LEFT: Title + pills
         const left = document.createElement("div");
         left.className = "min-w-0";
         row.appendChild(left);
@@ -160,7 +227,6 @@
         pills.className = "mt-2 flex flex-wrap items-center gap-2";
         left.appendChild(pills);
 
-        // Bigger (but not too much) pills
         const bd = document.createElement("span");
         bd.className =
           "inline-block text-sm sm:text-base font-semibold px-3 py-1.5 rounded-full bg-red-600 text-white shadow-sm";
@@ -176,18 +242,26 @@
         duePill.textContent = `Deadline: ${fmtShort(item.due)}`;
         pills.appendChild(duePill);
 
-        // RIGHT: FlipClock aligned right
+        const workloadCol = document.createElement("div");
+        workloadCol.className = "justify-self-start md:justify-self-center";
+        row.appendChild(workloadCol);
+        const workloadBadge = document.createElement("span");
+        workloadBadge.className =
+          "inline-block text-sm sm:text-base font-semibold px-3 py-1.5 rounded-full bg-sky-600 text-white shadow-sm";
+        workloadBadge.textContent = `Workload: ${item.days} day${
+          item.days === 1 ? "" : "s"
+        }`;
+        workloadCol.appendChild(workloadBadge);
+
         const right = document.createElement("div");
-        right.className = "flex justify-end md:justify-end";
+        right.className = "flex justify-end";
         row.appendChild(right);
 
         const clockWrap = document.createElement("div");
-        // smaller FlipClock
         clockWrap.className =
           "origin-right [transform:scale(0.6)] sm:[transform:scale(0.65)] md:[transform:scale(0.7)] lg:[transform:scale(0.75)]";
         right.appendChild(clockWrap);
 
-        // Init clock
         const secs = secondsUntil(item.due);
         if (secs <= 0 || !window.jQuery || !jQuery.fn || !jQuery.fn.FlipClock) {
           const done = document.createElement("div");
@@ -196,30 +270,224 @@
           right.appendChild(done);
           return;
         }
-
         const $clock = $("<div></div>");
         $(clockWrap).append($clock);
-
         const clock = $clock.FlipClock(secs, {
           clockFace: "DailyCounter",
           countdown: true,
           autoStart: true,
         });
-
-        // Remove seconds (divider + 2 digits)
         const $secDivider = $clock.find(".flip-clock-divider.seconds");
         if ($secDivider.length) {
           $secDivider.nextAll("ul").slice(0, 2).remove();
           $secDivider.remove();
         }
 
-        // Update red pill every 5 minutes
         setInterval(() => {
           bd.textContent = `Business days left: ${businessDaysRemaining(
             new Date(),
             item.due
           )}`;
         }, 300000);
+      }
+
+      /* ===== GANTT RENDER (SVG lightweight) ===== */
+      function buildGantt(items) {
+        const rowsEl = document.getElementById("ganttRows");
+        const scaleEl = document.getElementById("ganttScale");
+        rowsEl.innerHTML = "";
+        scaleEl.innerHTML = "";
+
+        if (items.length === 0) {
+          rowsEl.innerHTML = '<p class="p-4 text-slate-400">No data.</p>';
+          return;
+        }
+
+        // Compute start per task: due - workload (in business days)
+        const tasks = items.map((it) => {
+          const start = subBusinessDays(it.due, it.days || 0);
+          return { ...it, start };
+        });
+
+        // Compute overall range
+        const minStart = new Date(
+          Math.min(...tasks.map((t) => t.start.getTime()))
+        );
+        const maxDue = new Date(Math.max(...tasks.map((t) => t.due.getTime())));
+        // Add small margins
+        const startRange = new Date(minStart);
+        startRange.setDate(startRange.getDate() - 1);
+        const endRange = new Date(maxDue);
+        endRange.setDate(endRange.getDate() + 1);
+
+        // Build an array of dates (per day) for the scale
+        const days = [];
+        const d = new Date(startRange);
+        while (d <= endRange) {
+          days.push(new Date(d));
+          d.setDate(d.getDate() + 1);
+        }
+
+        // Layout constants
+        const cellW = 22; // width per day (px)
+        const rowH = 40; // row height
+        const padY = 10; // vertical padding inside row
+        const totalW = days.length * cellW;
+
+        // SCALE header
+        const scaleRow = document.createElement("div");
+        scaleRow.className = "min-w-full";
+        const scaleInner = document.createElement("div");
+        scaleInner.className = "relative noselect";
+        scaleInner.style.width = `${totalW}px`;
+        scaleInner.style.height = "32px";
+        scaleEl.appendChild(scaleRow);
+        scaleRow.appendChild(scaleInner);
+
+        // draw day ticks + month labels
+        days.forEach((day, idx) => {
+          const x = idx * cellW;
+          const isWeekend = day.getDay() === 0 || day.getDay() === 6;
+          const tick = document.createElement("div");
+          tick.className = "absolute top-0 bottom-0 border-r border-slate-800";
+          tick.style.left = `${x}px`;
+          scaleInner.appendChild(tick);
+
+          // month labels on first of month
+          if (day.getDate() === 1) {
+            const label = document.createElement("div");
+            label.className =
+              "absolute top-0 translate-y-0 text-[11px] text-slate-300";
+            label.style.left = `${x + 4}px`;
+            label.textContent = day.toLocaleString("en-GB", {
+              month: "short",
+              year: "2-digit",
+            });
+            scaleInner.appendChild(label);
+          }
+
+          // shade weekends
+          if (isWeekend) {
+            const shade = document.createElement("div");
+            shade.className = "absolute top-0 bottom-0 bg-slate-800/40";
+            shade.style.left = `${x}px`;
+            shade.style.width = `${cellW}px`;
+            shade.style.pointerEvents = "none";
+            scaleInner.appendChild(shade);
+          }
+        });
+
+        // Today line
+        const today = new Date();
+        const todayIdx = Math.max(
+          0,
+          Math.min(
+            days.length - 1,
+            Math.floor(
+              (new Date(
+                today.getFullYear(),
+                today.getMonth(),
+                today.getDate()
+              ) -
+                startRange) /
+                (1000 * 60 * 60 * 24)
+            )
+          )
+        );
+        const todayX = todayIdx * cellW + Math.floor(cellW / 2);
+        const todayLine = document.createElement("div");
+        todayLine.className = "absolute top-0 bottom-0 w-px bg-emerald-400/80";
+        todayLine.style.left = `${todayX}px`;
+        scaleInner.appendChild(todayLine);
+
+        // ROWS
+        tasks.forEach((t, i) => {
+          const row = document.createElement("div");
+          row.className =
+            "relative grid grid-cols-[260px_auto] gap-4 items-center border-b border-slate-800 py-2";
+          rowsEl.appendChild(row);
+
+          // left label
+          const left = document.createElement("div");
+          left.className = "min-w-0 pr-2";
+          left.innerHTML = `
+      <div class="truncate font-semibold text-slate-100">${t.title}</div>
+      <div class="mt-1 flex flex-wrap gap-2 text-xs">
+        <span class="px-2 py-0.5 rounded-full bg-sky-600 text-white">Workload: ${
+          t.days
+        }d</span>
+        <span class="px-2 py-0.5 rounded-full bg-emerald-600 text-white">Deadline: ${fmtShort(
+          t.due
+        )}</span>
+      </div>`;
+          row.appendChild(left);
+
+          // right canvas area
+          const right = document.createElement("div");
+          right.className = "relative overflow-visible";
+          right.style.height = `${rowH}px`;
+          right.style.minWidth = `${totalW}px`;
+          row.appendChild(right);
+
+          // background grid (weekends)
+          days.forEach((day, idx) => {
+            const x = idx * cellW;
+            const isWeekend = day.getDay() === 0 || day.getDay() === 6;
+            if (isWeekend) {
+              const wshade = document.createElement("div");
+              wshade.className = "absolute inset-y-0 bg-slate-800/30";
+              wshade.style.left = `${x}px`;
+              wshade.style.width = `${cellW}px`;
+              right.appendChild(wshade);
+            }
+          });
+
+          // bar coordinates
+          const startIdx = Math.max(
+            0,
+            Math.floor(
+              (new Date(
+                t.start.getFullYear(),
+                t.start.getMonth(),
+                t.start.getDate()
+              ) -
+                startRange) /
+                (1000 * 60 * 60 * 24)
+            )
+          );
+          const endIdx = Math.max(
+            startIdx + 1,
+            Math.floor(
+              (new Date(
+                t.due.getFullYear(),
+                t.due.getMonth(),
+                t.due.getDate()
+              ) -
+                startRange) /
+                (1000 * 60 * 60 * 24)
+            )
+          );
+          const x = startIdx * cellW + 2;
+          const w = Math.max(8, (endIdx - startIdx) * cellW - 4);
+
+          // bar
+          const bar = document.createElement("div");
+          bar.className =
+            "absolute rounded-lg bg-indigo-500/80 hover:bg-indigo-400 transition-colors shadow";
+          bar.style.left = `${x}px`;
+          bar.style.top = `${padY}px`;
+          bar.style.height = `${rowH - padY * 2}px`;
+          bar.style.width = `${w}px`;
+          bar.title = `${t.title}\n${t.days} business day(s)\nEnd: ${fmtShort(
+            t.due
+          )}`;
+          right.appendChild(bar);
+
+          // if overdue
+          if (t.due < new Date()) {
+            bar.classList.add("ring-2", "ring-red-500/70");
+          }
+        });
       }
 
       /* ===== FETCH + BOOT ===== */
@@ -234,8 +502,11 @@
       }
 
       (async function init() {
-        const list = document.getElementById("deadlines-list");
-        const empty = document.getElementById("empty-msg");
+        // tabs
+        const btnCards = document.getElementById("btnCards");
+        const btnGantt = document.getElementById("btnGantt");
+        const viewCards = document.getElementById("viewCards");
+        const viewGantt = document.getElementById("viewGantt");
 
         let items = [];
         try {
@@ -247,15 +518,34 @@
         items = filterByWho(items, whoFilter);
         items.sort((a, b) => a.due - b.due);
 
+        // render cards
+        const list = document.getElementById("deadlines-list");
+        const empty = document.getElementById("empty-msg");
         if (items.length === 0) {
           empty.classList.remove("hidden");
-          empty.textContent = whoFilter
-            ? `No deadlines for “${whoFilterRaw}”.`
-            : "No deadlines found.";
-          return;
+        } else {
+          items.forEach((it) => createCardRow(list, it));
         }
 
-        items.forEach((item) => createRow(list, item));
+        // tab behavior
+        btnCards.onclick = () => {
+          btnCards.className =
+            "px-3 py-2 rounded-lg bg-slate-800 text-slate-100 border border-slate-700 font-medium";
+          btnGantt.className =
+            "px-3 py-2 rounded-lg bg-slate-900 text-slate-300 border border-slate-700";
+          viewCards.classList.remove("hidden");
+          viewGantt.classList.add("hidden");
+        };
+        btnGantt.onclick = () => {
+          btnGantt.className =
+            "px-3 py-2 rounded-lg bg-slate-800 text-slate-100 border border-slate-700 font-medium";
+          btnCards.className =
+            "px-3 py-2 rounded-lg bg-slate-900 text-slate-300 border border-slate-700";
+          viewGantt.classList.remove("hidden");
+          viewCards.classList.add("hidden");
+          // build gantt on demand (ensure container width is known)
+          buildGantt(items);
+        };
       })();
     </script>
   </body>
